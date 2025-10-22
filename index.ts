@@ -2,125 +2,126 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 
-const NWS_API_BASE = "https://api.weather.gov";
-const USER_AGENT = "weather-app/1.0";
+const EMFONT_API_BASE = "https://font.emtech.cc";
+const USER_AGENT = "emfont-mcp/1.0";
 
-// Helper function for making NWS API requests
-async function makeNWSRequest<T>(url: string): Promise<T | null> {
-    const headers = {
+// Helper function for making emfont API requests
+async function makeEmfontRequest<T>(url: string, method: string = "GET", body?: any): Promise<T | null> {
+    const headers: Record<string, string> = {
         "User-Agent": USER_AGENT,
-        Accept: "application/geo+json",
+        Accept: "application/json",
     };
 
+    const options: RequestInit = {
+        method,
+        headers,
+    };
+
+    if (body && method === "POST") {
+        headers["Content-Type"] = "application/json";
+        options.body = JSON.stringify(body);
+    }
+
     try {
-        const response = await fetch(url, { headers });
+        const response = await fetch(url, options);
         if (!response.ok) {
             throw new Error(`HTTP error! status: ${response.status}`);
         }
         return (await response.json()) as T;
     } catch (error) {
-        console.error("Error making NWS request:", error);
+        console.error("Error making emfont request:", error);
         return null;
     }
 }
 
-interface AlertFeature {
-    properties: {
-        event?: string;
-        areaDesc?: string;
-        severity?: string;
-        status?: string;
-        headline?: string;
+// Type definitions
+interface FontInfo {
+    id: string;
+    name: string;
+    weight: number[];
+    author?: string;
+    name_zh?: string;
+    name_en?: string;
+    category?: string;
+    tags?: string[];
+    family?: string;
+}
+
+interface FontDetailInfo {
+    name: {
+        original?: string;
+        zh?: string;
+        en?: string;
     };
+    category?: string;
+    weight: number[];
+    tag?: string[];
+    family?: string;
+    version?: string;
+    license?: string;
+    source?: string;
+    author?: string;
+    description?: string;
 }
 
-// Format alert data
-function formatAlert(feature: AlertFeature): string {
-    const props = feature.properties;
-    return [
-        `Event: ${props.event || "Unknown"}`,
-        `Area: ${props.areaDesc || "Unknown"}`,
-        `Severity: ${props.severity || "Unknown"}`,
-        `Status: ${props.status || "Unknown"}`,
-        `Headline: ${props.headline || "No headline"}`,
-        "---",
-    ].join("\n");
-}
-
-interface ForecastPeriod {
-    name?: string;
-    temperature?: number;
-    temperatureUnit?: string;
-    windSpeed?: string;
-    windDirection?: string;
-    shortForecast?: string;
-}
-
-interface AlertsResponse {
-    features: AlertFeature[];
-}
-
-interface PointsResponse {
-    properties: {
-        forecast?: string;
-    };
-}
-
-interface ForecastResponse {
-    properties: {
-        periods: ForecastPeriod[];
-    };
+interface GenerateFontResponse {
+    status: string;
+    message?: string;
+    name: string;
+    location: string[];
 }
 
 // Create server instance
 const server = new McpServer({
-    name: "weather",
+    name: "emfont",
     version: "1.0.0",
 });
 
-// Register weather tools
+// Register emfont tools
 server.tool(
-    "get-alerts",
-    "Get weather alerts for a state",
+    "list-fonts",
+    "列出所有可用的字體或搜尋特定字體",
     {
-        state: z.string().length(2).describe("Two-letter state code (e.g. CA, NY)"),
+        query: z.string().optional().describe("搜尋關鍵字（選填），可用於過濾字體列表"),
     },
-    async ({ state }) => {
-        const stateCode = state.toUpperCase();
-        const alertsUrl = `${NWS_API_BASE}/alerts?area=${stateCode}`;
-        const alertsData = await makeNWSRequest<AlertsResponse>(alertsUrl);
+    async ({ query }) => {
+        const url = query ? `${EMFONT_API_BASE}/list?q=${encodeURIComponent(query)}` : `${EMFONT_API_BASE}/list`;
 
-        if (!alertsData) {
+        const fontList = await makeEmfontRequest<FontInfo[]>(url);
+
+        if (!fontList) {
             return {
                 content: [
                     {
                         type: "text",
-                        text: "Failed to retrieve alerts data",
+                        text: "無法取得字體列表",
                     },
                 ],
             };
         }
 
-        const features = alertsData.features || [];
-        if (features.length === 0) {
+        if (fontList.length === 0) {
             return {
                 content: [
                     {
                         type: "text",
-                        text: `No active alerts for ${stateCode}`,
+                        text: query ? `找不到符合 "${query}" 的字體` : "目前沒有可用的字體",
                     },
                 ],
             };
         }
 
-        const formattedAlerts = features.map(formatAlert);
-        const alertsText = `Active alerts for ${stateCode}:\n\n${formattedAlerts.join("\n")}`;
+        const formattedList = fontList.map(
+            font => `ID: ${font.id}\n名稱: ${font.name}\n字重: ${font.weight.join(", ")}\n分類: ${font.category || "未分類"}\n標籤: ${font.tags?.join(", ") || "無"}\n---`
+        );
+
+        const listText = query ? `符合 "${query}" 的字體 (共 ${fontList.length} 個):\n\n${formattedList.join("\n")}` : `所有可用字體 (共 ${fontList.length} 個):\n\n${formattedList.join("\n")}`;
 
         return {
             content: [
                 {
                     type: "text",
-                    text: alertsText,
+                    text: listText,
                 },
             ],
         };
@@ -128,83 +129,190 @@ server.tool(
 );
 
 server.tool(
-    "get-forecast",
-    "Get weather forecast for a location",
+    "get-font-info",
+    "取得指定字體的詳細資訊",
     {
-        latitude: z.number().min(-90).max(90).describe("Latitude of the location"),
-        longitude: z.number().min(-180).max(180).describe("Longitude of the location"),
+        fontId: z.string().describe("字體 ID，例如 'jfOpenHuninn' 或 'GenJyuuGothicP'"),
     },
-    async ({ latitude, longitude }) => {
-        // Get grid point data
-        const pointsUrl = `${NWS_API_BASE}/points/${latitude.toFixed(4)},${longitude.toFixed(4)}`;
-        const pointsData = await makeNWSRequest<PointsResponse>(pointsUrl);
+    async ({ fontId }) => {
+        const url = `${EMFONT_API_BASE}/info/${fontId}`;
+        const fontInfo = await makeEmfontRequest<FontDetailInfo>(url);
 
-        if (!pointsData) {
+        if (!fontInfo) {
             return {
                 content: [
                     {
                         type: "text",
-                        text: `Failed to retrieve grid point data for coordinates: ${latitude}, ${longitude}. This location may not be supported by the NWS API (only US locations are supported).`,
+                        text: `無法取得字體 "${fontId}" 的詳細資訊，請確認字體 ID 是否正確`,
                     },
                 ],
             };
         }
 
-        const forecastUrl = pointsData.properties?.forecast;
-        if (!forecastUrl) {
-            return {
-                content: [
-                    {
-                        type: "text",
-                        text: "Failed to get forecast URL from grid point data",
-                    },
-                ],
-            };
-        }
-
-        // Get forecast data
-        const forecastData = await makeNWSRequest<ForecastResponse>(forecastUrl);
-        if (!forecastData) {
-            return {
-                content: [
-                    {
-                        type: "text",
-                        text: "Failed to retrieve forecast data",
-                    },
-                ],
-            };
-        }
-
-        const periods = forecastData.properties?.periods || [];
-        if (periods.length === 0) {
-            return {
-                content: [
-                    {
-                        type: "text",
-                        text: "No forecast periods available",
-                    },
-                ],
-            };
-        }
-
-        // Format forecast periods
-        const formattedForecast = periods.map((period: ForecastPeriod) =>
-            [
-                `${period.name || "Unknown"}:`,
-                `Temperature: ${period.temperature || "Unknown"}°${period.temperatureUnit || "F"}`,
-                `Wind: ${period.windSpeed || "Unknown"} ${period.windDirection || ""}`,
-                `${period.shortForecast || "No forecast available"}`,
-                "---",
-            ].join("\n")
-        );
-
-        const forecastText = `Forecast for ${latitude}, ${longitude}:\n\n${formattedForecast.join("\n")}`;
+        const infoText = [
+            `字體資訊: ${fontInfo.name.zh || fontInfo.name.original || fontId}`,
+            "",
+            `原始名稱: ${fontInfo.name.original || "未提供"}`,
+            `中文名稱: ${fontInfo.name.zh || "未提供"}`,
+            `英文名稱: ${fontInfo.name.en || "未提供"}`,
+            `分類: ${fontInfo.category || "未分類"}`,
+            `可用字重: ${fontInfo.weight.join(", ")}`,
+            `標籤: ${fontInfo.tag?.join(", ") || "無"}`,
+            `字體家族: ${fontInfo.family || "未提供"}`,
+            `版本: ${fontInfo.version || "未提供"}`,
+            `授權: ${fontInfo.license || "未提供"}`,
+            `作者: ${fontInfo.author || "未提供"}`,
+            `來源: ${fontInfo.source || "未提供"}`,
+            "",
+            `描述: ${fontInfo.description || "無描述"}`,
+        ].join("\n");
 
         return {
             content: [
                 {
                     type: "text",
-                    text: forecastText,
+                    text: infoText,
+                },
+            ],
+        };
+    }
+);
+
+server.tool(
+    "generate-font",
+    "生成包含指定文字的客製化字體檔案",
+    {
+        fontId: z.string().describe("字體 ID，例如 'jfOpenHuninn'"),
+        words: z.string().describe("要包含在字體中的文字內容"),
+        weight: z.number().min(100).max(900).optional().default(400).describe("字體粗細 (100-900，預設 400)"),
+        min: z.boolean().optional().default(false).describe("是否使用極致壓縮（不建議用於內文）"),
+        format: z.enum(["woff2", "woff", "ttf"]).optional().default("woff2").describe("字體檔案格式 (預設 woff2)"),
+    },
+    async ({ fontId, words, weight, min, format }) => {
+        const url = `${EMFONT_API_BASE}/g/${fontId}`;
+        const body = {
+            words,
+            weight,
+            min,
+            format,
+        };
+
+        const result = await makeEmfontRequest<GenerateFontResponse>(url, "POST", body);
+
+        if (!result) {
+            return {
+                content: [
+                    {
+                        type: "text",
+                        text: `無法生成字體檔案，請確認字體 ID "${fontId}" 是否正確`,
+                    },
+                ],
+            };
+        }
+
+        if (result.status !== "success") {
+            return {
+                content: [
+                    {
+                        type: "text",
+                        text: `字體生成失敗: ${result.message || "未知錯誤"}`,
+                    },
+                ],
+            };
+        }
+
+        const cssCode = result.location.map((url, index) => `@font-face {\n    font-family: '${result.name}';\n    src: url('${url}') format('${format}');\n}`).join("\n\n");
+
+        const usageExample = `.emfont-${fontId} {\n    font-family: '${result.name}', sans-serif;\n}`;
+
+        const resultText = [
+            `✓ 字體生成成功！`,
+            "",
+            `字體名稱: ${result.name}`,
+            `包含文字: ${words}`,
+            `字重: ${weight}`,
+            `格式: ${format}`,
+            `極致壓縮: ${min ? "是" : "否"}`,
+            "",
+            `字體檔案連結 (共 ${result.location.length} 個):`,
+            ...result.location.map((loc, i) => `  ${i + 1}. ${loc}`),
+            "",
+            "CSS 使用範例:",
+            "```css",
+            cssCode,
+            "",
+            usageExample,
+            "```",
+        ].join("\n");
+
+        return {
+            content: [
+                {
+                    type: "text",
+                    text: resultText,
+                },
+            ],
+        };
+    }
+);
+
+server.tool(
+    "get-css-link",
+    "取得字體的 CSS 載入連結（類似 Google Fonts）",
+    {
+        fontId: z.string().describe("字體 ID"),
+        weight: z.number().optional().describe("指定字重（選填），不指定則載入完整字體"),
+        words: z.string().optional().describe("只包含特定文字（選填）"),
+        min: z.boolean().optional().default(false).describe("是否使用極致壓縮"),
+    },
+    async ({ fontId, weight, words, min }) => {
+        let url = `${EMFONT_API_BASE}/css/${fontId}`;
+
+        if (weight) {
+            url += `/${weight}`;
+        }
+
+        const params = new URLSearchParams();
+        if (words) params.append("words", words);
+        if (weight && !url.includes(`/${weight}`)) params.append("weight", weight.toString());
+        if (min) params.append("min", "true");
+
+        if (params.toString()) {
+            url += `?${params.toString()}`;
+        }
+
+        const htmlExample = `<link href="${url}" rel="stylesheet" />`;
+        const cssExample = `@import url("${url}");`;
+
+        const resultText = [
+            `字體 CSS 載入連結:`,
+            "",
+            `字體 ID: ${fontId}`,
+            weight ? `字重: ${weight}` : "字重: 完整字體",
+            words ? `包含文字: ${words}` : "",
+            min ? `極致壓縮: 是` : "",
+            "",
+            "HTML 使用方式:",
+            "```html",
+            htmlExample,
+            "```",
+            "",
+            "CSS 使用方式:",
+            "```css",
+            cssExample,
+            "```",
+            "",
+            "完整連結:",
+            url,
+        ]
+            .filter(Boolean)
+            .join("\n");
+
+        return {
+            content: [
+                {
+                    type: "text",
+                    text: resultText,
                 },
             ],
         };
@@ -215,7 +323,7 @@ server.tool(
 async function main() {
     const transport = new StdioServerTransport();
     await server.connect(transport);
-    console.error("Weather MCP Server running on stdio");
+    console.error("emfont MCP Server running on stdio");
 }
 
 main().catch(error => {
