@@ -84,7 +84,8 @@ server.tool(
     {
         query: z.string().optional().describe("搜尋關鍵字（選填），可用於過濾字體列表"),
     },
-    async ({ query }) => {
+    async args => {
+        const query = args?.query;
         const url = query ? `${EMFONT_API_BASE}/list?q=${encodeURIComponent(query)}` : `${EMFONT_API_BASE}/list`;
 
         const fontList = await makeEmfontRequest<FontInfo[]>(url);
@@ -184,11 +185,17 @@ server.tool(
     {
         fontId: z.string().describe("字體 ID，例如 'jfOpenHuninn'"),
         words: z.string().describe("要包含在字體中的文字內容"),
-        weight: z.number().min(100).max(900).optional().default(400).describe("字體粗細 (100-900，預設 400)"),
-        min: z.boolean().optional().default(false).describe("是否使用極致壓縮（不建議用於內文）"),
-        format: z.enum(["woff2", "woff", "ttf"]).optional().default("woff2").describe("字體檔案格式 (預設 woff2)"),
+        weight: z.number().min(100).max(900).optional().describe("字體粗細 (100-900，預設 400)"),
+        min: z.boolean().optional().describe("是否使用極致壓縮（不建議用於內文）"),
+        format: z.enum(["woff2", "woff", "ttf"]).optional().describe("字體檔案格式 (預設 woff2)"),
     },
-    async ({ fontId, words, weight, min, format }) => {
+    async args => {
+        const fontId = args.fontId;
+        const words = args.words;
+        const weight = args.weight || 400;
+        const min = args.min || false;
+        const format = args.format || "woff2";
+
         const url = `${EMFONT_API_BASE}/g/${fontId}`;
         const body = {
             words,
@@ -263,9 +270,14 @@ server.tool(
         fontId: z.string().describe("字體 ID"),
         weight: z.number().optional().describe("指定字重（選填），不指定則載入完整字體"),
         words: z.string().optional().describe("只包含特定文字（選填）"),
-        min: z.boolean().optional().default(false).describe("是否使用極致壓縮"),
+        min: z.boolean().optional().describe("是否使用極致壓縮"),
     },
-    async ({ fontId, weight, words, min }) => {
+    async args => {
+        const fontId = args.fontId;
+        const weight = args.weight;
+        const words = args.words;
+        const min = args.min || false;
+
         let url = `${EMFONT_API_BASE}/css/${fontId}`;
 
         if (weight) {
