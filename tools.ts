@@ -2,6 +2,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 
 const EMFONT_API_BASE = "https://font.emtech.cc";
+const EMFONT_DOC_BASE = "https://raw.githubusercontent.com/emfont/doc/refs/heads/fuma/content/docs";
 const USER_AGENT = "emfont-mcp/1.0";
 
 // Helper function for making emfont API requests
@@ -70,12 +71,21 @@ export interface GenerateFontResponse {
     location: string[];
 }
 
+export interface DocMeta {
+    title: string;
+    pages: string[];
+    root?: boolean;
+    icon?: string;
+}
+
 export function registerEmfontTools(server: McpServer) {
     server.tool(
         "list-fonts",
-        "列出所有可用的字體或搜尋特定字體",
+        "列出所有可用的字體或搜尋特定字體。選擇適合字體時請使用 get-font-info 工具逐一取得字體詳細資訊。",
         {
-            query: z.string().optional().describe("搜尋關鍵字（選填），可用於過濾字體列表"),
+            query: z.string().optional().describe("過濾字體名稱（選填），注意這裡不能搜尋風格或標籤等其他屬性。"),
+            tags: z.string().optional().describe("以逗號分隔的標籤列表（選填），只能使用：黑體,宋體,調合字,像素,圓體,丹,月,明體,楷體,icon"),
+            category: z.string().optional().describe("字體分類（選填），只能使用：sans-serif,cursive,fantasy,serif,monospace"),
         },
         async args => {
             const query = args?.query;
@@ -221,9 +231,9 @@ export function registerEmfontTools(server: McpServer) {
                 };
             }
 
-            const cssCode = result.location.map((url, index) => `@font-face {\n    font-family: '${result.name}';\n    src: url('${url}') format('${format}');\n}`).join("\n\n");
+            const cssCode = result.location.map((url, index) => `@font-face {\n    font-family: '${fontId}';\n    src: url('${url}') format('${format}');\n}`).join("\n\n");
 
-            const usageExample = `.emfont-${fontId} {\n    font-family: '${result.name}', sans-serif;\n}`;
+            const usageExample = `.emfont-${fontId} {\n    font-family: '${fontId}', sans-serif;\n}`;
 
             const resultText = [
                 `✓ 字體生成成功！`,
@@ -288,6 +298,7 @@ export function registerEmfontTools(server: McpServer) {
 
             const htmlExample = `<link href="${url}" rel="stylesheet" />`;
             const cssExample = `@import url("${url}");`;
+            const cssUsageExample = `body {\n    font-family: "${fontId}", sans-serif;\n}`;
 
             const resultText = [
                 `字體 CSS 載入連結:`,
@@ -297,21 +308,129 @@ export function registerEmfontTools(server: McpServer) {
                 words ? `包含文字: ${words}` : "",
                 min ? `極致壓縮: 是` : "",
                 "",
+                "完整 CSS 範例:",
+                "```css",
+                cssExample,
+                "",
+                cssUsageExample,
+                "```",
+                "",
                 "HTML 使用方式:",
                 "```html",
                 htmlExample,
                 "```",
                 "",
-                "CSS 使用方式:",
-                "```css",
-                cssExample,
-                "```",
+                "💡 提示:",
+                `• 字體名稱使用 ID "${fontId}" 而非原始名稱`,
+                `• CSS 連結格式: /css/{fontId} (將字體詳情的 /fonts 改成 /css 即可)`,
                 "",
                 "完整連結:",
                 url,
             ]
                 .filter(Boolean)
                 .join("\n");
+
+            return {
+                content: [
+                    {
+                        type: "text",
+                        text: resultText,
+                    },
+                ],
+            };
+        }
+    );
+
+    server.tool("list-docs", "列出所有可用的文檔頁面", {}, async () => {
+        const metaUrl = `${EMFONT_DOC_BASE}/meta.json`;
+        const meta = await makeEmfontRequest<DocMeta>(metaUrl);
+
+        if (!meta) {
+            return {
+                content: [
+                    {
+                        type: "text",
+                        text: "無法取得文檔列表",
+                    },
+                ],
+            };
+        }
+
+        const pageList: string[] = [];
+
+        for (const page of meta.pages) {
+            if (page.startsWith("---")) {
+                pageList.push(`\n${page}`);
+                continue;
+            }
+
+            // Check if it's a folder
+            if (page === "framework" || page === "story") {
+                const folderMetaUrl = `${EMFONT_DOC_BASE}/${page}/meta.json`;
+                const folderMeta = await makeEmfontRequest<DocMeta>(folderMetaUrl);
+
+                if (folderMeta) {
+                    pageList.push(`\n📁 ${page}/ (${folderMeta.title})`);
+                    for (const subPage of folderMeta.pages) {
+                        pageList.push(`  └─ ${page}/${subPage}`);
+                    }
+                } else {
+                    pageList.push(`📄 ${page}`);
+                }
+            } else {
+                pageList.push(`📄 ${page}`);
+            }
+        }
+
+        const resultText = [`emfont 文檔列表 (${meta.title})`, "", ...pageList, "", "💡 使用 get-doc 工具讀取完整文檔內容", "   例如: get-doc with docPath='setup' 或 'framework/react'"].join("\n");
+
+        return {
+            content: [
+                {
+                    type: "text",
+                    text: resultText,
+                },
+            ],
+        };
+    });
+
+    server.tool(
+        "get-doc",
+        "讀取指定文檔的完整內容",
+        {
+            docPath: z.string().describe("文檔路徑，例如 'setup', 'css', 'framework/react', 'story/faq'"),
+        },
+        async ({ docPath }) => {
+            // Remove leading/trailing slashes
+            const cleanPath = docPath.replace(/^\/+|\/+$/g, "");
+
+            // Try .mdx first, then .md
+            let docUrl = `${EMFONT_DOC_BASE}/${cleanPath}.mdx`;
+            let response = await fetch(docUrl, {
+                headers: { "User-Agent": USER_AGENT },
+            });
+
+            if (!response.ok) {
+                docUrl = `${EMFONT_DOC_BASE}/${cleanPath}.md`;
+                response = await fetch(docUrl, {
+                    headers: { "User-Agent": USER_AGENT },
+                });
+            }
+
+            if (!response.ok) {
+                return {
+                    content: [
+                        {
+                            type: "text",
+                            text: `無法找到文檔 "${docPath}"，請使用 list-docs 查看可用的文檔列表`,
+                        },
+                    ],
+                };
+            }
+
+            const content = await response.text();
+
+            const resultText = [`文檔: ${cleanPath}`, `來源: ${docUrl}`, "", "---", "", content].join("\n");
 
             return {
                 content: [
