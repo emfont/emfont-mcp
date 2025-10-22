@@ -1,2 +1,0 @@
-# emfont-mcp
-emfont mcp
